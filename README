@@ -1,0 +1,409 @@
+# TraficLab - Circulation alternée pendant des travaux routiers
+
+Version 1.0 - 23 octobre 2026
+
+Application pédagogique destinée notamment aux étudiants en génie civil.
+Elle étudie deux files de véhicules qui utilisent alternativement une même
+section de route. Ouverture directe, sans compte utilisateur ni clé API.
+
+Le dossier livré contient seulement :
+- app.py : interface, schéma animé, calculs, imports et exports ;
+- requirement.text : dépendances pour l'installation locale ;
+- README : ce document.
+
+Tests, captures et archive sont placés hors du dossier livré.
+Aucune donnée n'est écrite dans ce dossier par l'application.
+
+## 1. Installation Windows et lancement
+
+Python 3.11 à 3.14 convient avec les dépendances proposées. La version
+effectivement testée sur cette machine est Python 3.14, Streamlit 1.65.
+
+Dans VS Code, ouvrir le dossier traficlab, puis un terminal :
+
+    python -m pip install -r requirement.text
+    python -m streamlit run app.py
+
+Ouvrir l'adresse locale affichée dans le terminal. Le terminal doit rester
+ouvert pendant l'utilisation. Pour arrêter : Ctrl+C dans ce terminal.
+
+Si nécessaire, isoler l'installation dans un environnement situé HORS
+du dossier livré, en remplaçant les chemins par ceux de votre machine :
+
+    python -m venv ..\traficlab-env
+    ..\traficlab-env\Scripts\python.exe -m pip install -r requirement.text
+    ..\traficlab-env\Scripts\python.exe -m streamlit run app.py
+
+Bibliothèques :
+- Streamlit : navigation, formulaires, tableaux et téléchargements ;
+- NumPy : tirages aléatoires, tableaux numériques et quantiles ;
+- pandas : comptages, résultats et lecture CSV/Excel ;
+- Plotly : graphiques interactifs et animation de la circulation ;
+- SimPy : moteur de simulation à événements discrets et files FIFO ;
+- SciPy : loi de Poisson et intervalle binomial de Wilson ;
+- ReportLab : rapport PDF ;
+- openpyxl : lecture et création des classeurs Excel.
+
+L'installation locale a seulement nécessité l'ajout de SimPy ; les autres
+bibliothèques étaient déjà disponibles. Aucun service payant n'est utilisé.
+
+## 2. Commencer sans se perdre
+
+L'écran « Poste de circulation » est le tableau de bord opérationnel.
+Deux espaces sont strictement séparés :
+- Mes données : paramètres et comptages de l'utilisateur ;
+- Exemple fictif : démonstration, jamais ajoutée automatiquement à vos données.
+
+Pour découvrir l'application : cliquer sur « Charger l'exemple fictif ».
+La démonstration est calculée explicitement et son origine reste affichée.
+Revenir à « Mes données » pour préparer un autre scénario.
+
+Dans « Mes données », les réglages initiaux sont des valeurs proposées,
+pas des observations de terrain. Cliquer sur « Régler le chantier »,
+modifier les paramètres puis « Appliquer les paramètres ». Revenir au poste
+et cliquer sur « Lancer la simulation ».
+
+Modifier les paramètres ou remplacer un comptage retire l'ancien résultat.
+Une nouvelle simulation est nécessaire. Les anciennes comparaisons et
+analyses probabilistes ne s'affichent pas si les paramètres ont changé.
+
+## 3. Modèle de circulation
+
+Le temps est exprimé en secondes depuis le début de l'observation.
+L'horizon est de 1 à 60 minutes. Le cycle démarre toujours par le sens A :
+
+    vert A -> dégagement -> vert B -> dégagement -> nouveau cycle
+
+Paramètres :
+- g_A, g_B : verts des deux sens, en secondes ;
+- r : dégagement, identique aux deux transitions, en secondes ;
+- h : espacement entre les entrées successives, en secondes ;
+- L : longueur de la section, en mètres ;
+- v : vitesse constante de traversée, en km/h ;
+- q_A, q_B : débits d'arrivée, en véhicules par heure ;
+- files initiales : véhicules déjà en attente à la seconde 0.
+
+Formules vérifiables avec une calculatrice :
+
+    Cycle C = g_A + g_B + 2 x r
+    Traversée t_tr = L / (v / 3,6)
+    Créneaux par vert A = partie entière(g_A / h)
+    Capacité A = partie entière(g_A / h) x 3600 / C
+
+Même formule pour B. La capacité est un débit de saturation théorique,
+avec une file constamment alimentée. Ce n'est pas le nombre réellement
+sorti pendant une courte simulation.
+
+### Créneaux de passage et FIFO
+
+Pendant un vert, le premier créneau d'entrée est à h secondes après son
+début, puis toutes les h secondes. Un créneau peut se terminer exactement
+à la fin du vert. Le véhicule entre à cet instant. Un créneau sans véhicule
+est perdu ; il n'est pas reporté. Les entrées à l'instant exact de fin de
+l'horizon sont exclues.
+
+SimPy gère les événements et les files FIFO : premier arrivé, premier
+admis dans son sens. Les véhicules des files initiales précèdent les
+nouvelles arrivées à la seconde 0. Une arrivée exactement à un créneau
+peut utiliser ce créneau. Il n'y a pas de dépassement ni d'abandon de file.
+L'attente des véhicules initiaux est comptée depuis la seconde 0 seulement :
+leur éventuelle attente antérieure au début du scénario n'est pas connue.
+
+Plusieurs véhicules de même sens peuvent se trouver dans la section.
+Les traversées opposées ne se chevauchent pas si les hypothèses du modèle
+sont respectées. Le logiciel refuse r < t_tr. Cette vérification couvre
+UNIQUEMENT une traversée idéale à vitesse constante. Elle n'intègre ni
+marge de sécurité, ni accélération, ni véhicule lent exceptionnel.
+
+Ce modèle de créneaux simplifie un véritable écoulement routier.
+Il ne reproduit pas une théorie complète du débit de saturation.
+
+### Arrivées régulières, Poisson ou comptage fourni
+
+- Régulières : intervalle 3600 / q secondes ; première arrivée à la moitié
+  de cet intervalle. Aucune arrivée si q = 0.
+- Poisson : N est tiré selon une loi de Poisson de moyenne q x T / 3600 ;
+  conditionnellement à N, ses instants sont uniformes et triés sur [0, T).
+  Cette construction représente un processus de Poisson homogène.
+- Comptage fourni : chaque ligne donne l'instant d'un véhicule et son sens.
+  Les débits q ne remplacent PAS ce fichier pour la simulation principale.
+
+Une graine permet de reproduire un tirage avec les mêmes versions de
+bibliothèques. Changer la graine permet d'obtenir un autre scénario.
+Les arrivées simulées ne sont jamais présentées comme des observations.
+
+## 4. Lire le tableau de bord
+
+- Véhicules suivis = file initiale + nouvelles arrivées.
+- Admis = véhicules entrés dans la section avant la fin de l'horizon.
+- Sortis = véhicules dont la traversée est terminée avant ou à cette fin.
+- Encore en traversée = entrés, mais pas encore sortis à cette fin.
+- Encore en attente = non admis à cette fin.
+- File totale maximale = maximum simultané de file A + file B.
+
+Le bilan vérifié est :
+
+    initiaux + arrivées = en attente + en traversée + sortis
+
+Le maximum ne résulte PAS de l'addition des maxima A et B pris à des
+instants différents. Les files sont calculées à chaque événement exact.
+Le schéma est non à l'échelle et ne dessine que 10 véhicules par file au
+maximum ; ses compteurs restent exhaustifs. Le curseur choisit un instant.
+« Animer » rejoue au plus un cycle depuis cet instant, sans recalculer
+ni modifier les résultats. Un véhicule peut ne pas être visible entre
+deux images si sa traversée est très courte.
+
+Attente observée = entrée - arrivée si le véhicule est admis ; sinon
+fin de l'horizon - arrivée. Pour les véhicules encore en attente, ce n'est
+qu'une borne inférieure de leur attente finale. Leur attente finale
+reste inconnue et la colonne attente_avant_entrée_s est vide.
+
+L'histogramme concerne UNIQUEMENT les véhicules admis. La moyenne des
+admis peut être trompeuse si beaucoup d'autres véhicules attendent encore.
+Toujours la lire avec la file finale et le nombre de sorties.
+
+La file moyenne est l'intégrale exacte de la file totale divisée par T.
+Elle coïncide avec la somme des attentes observées divisée par T.
+
+## 5. Saisir ou importer un comptage
+
+Rubrique « Paramètres et comptages », tableau « Arrivées individuelles ».
+Une ligne = un véhicule. Deux lignes identiques = deux véhicules arrivés
+ensemble. Ne pas ressaisir les véhicules déjà comptés dans les files initiales.
+
+Colonnes CSV/Excel, avec cet exemple fictif :
+
+    arrivee_s,sens
+    0,A
+    0,B
+    5,A
+    12,B
+
+Les secondes doivent appartenir à [0, T), le sens doit être A ou B.
+Au plus 5 000 arrivées, fichier de 2 Mo maximum. Pour Excel, utiliser XLSX,
+première feuille ; taille décompressée plafonnée à 20 Mo.
+
+« Utiliser ce comptage » ou « Remplacer par ce fichier » remplace les
+anciennes arrivées, active le mode Comptage fourni et retire le résultat
+précédent. Aucun mélange automatique. La prévisualisation n'enregistre rien.
+Un tableau vide explicitement validé signifie zéro nouvelle arrivée.
+
+Une ligne incorrecte refuse tout le lot. Les comptages sont des données
+fournies, non vérifiées par l'application : réelles ou fictives selon leur origine.
+
+## 6. Comparer deux réglages
+
+Choisir deux verts alternatifs, le dégagement et l'espacement des entrées.
+La comparaison garde la géométrie, les files initiales, l'horizon et les
+MÊMES arrivées individuelles pour les deux scénarios. Les comptages fournis
+sont utilisés s'ils sont actifs ; sinon un seul tirage de référence est réutilisé.
+
+Comparer file maximale, file finale, sorties et attentes observées.
+Les moyennes sont calculées sur le même ensemble de véhicules suivis.
+Les réglages de référence ne sont pas remplacés par la comparaison.
+
+Test : conserver tous les réglages alternatifs égaux à la référence.
+Tous les résultats doivent être identiques, courbes superposées.
+
+## 7. Probabilités
+
+### Nombre d'arrivées : loi de Poisson
+
+    mu = débit en véh/h x intervalle en minutes / 60
+    P(N > k) = fonction de survie de Poisson au seuil k
+
+Le seuil est STRICT : « plus de 5 » signifie au moins 6 véhicules.
+Ce calcul concerne un nombre d'ARRIVÉES, pas la longueur d'une file.
+Hypothèses : indépendance et débit constant sur l'intervalle considéré.
+
+Test : débit A = 60 véh/h ; intervalle = 1 min ; seuil = 0.
+mu = 1 ; P(N > 0) = 1 - exp(-1) = 0,6321206, soit 63,21 %.
+
+### Monte-Carlo et sensibilité
+
+20 à 200 répétitions indépendantes de l'alternat, avec arrivées de Poisson.
+Le bouton indique explicitement ce remplacement probabiliste : un comptage
+fourni n'est ni ajusté à une loi ni rééchantillonné. Les débits saisis servent
+d'hypothèses, et ne sont pas estimés automatiquement à partir du comptage.
+
+Risque étudié = fraction des essais où la file TOTALE MAXIMALE est
+strictement supérieure au seuil. Les quantiles sont empiriques, par
+inversion de la fonction de répartition (valeurs entières observées).
+
+L'intervalle à 95 % de Wilson mesure seulement l'erreur d'échantillonnage
+Monte-Carlo conditionnellement aux hypothèses, pas la validité du modèle.
+Même si aucun dépassement n'est observé, la borne supérieure reste positive.
+
+La sensibilité propose des débits à -20 %, de référence et +20 %, sans
+modifier les autres paramètres. Le même jeu de graines est utilisé par
+répétition ; les arrivées ne sont pas nécessairement identiques entre débits.
+Le coût de calcul est plafonné pour éviter de bloquer une session.
+
+Test sans hasard : débits 0 / 0, files initiales 0 / 0, seuil 0.
+Toutes les files maximales sont nulles et le risque empirique vaut 0 %.
+
+## 8. Test complet vérifiable à la calculatrice
+
+Préparer les paramètres suivants dans « Mes données » :
+- durée : 1 minute ; verts A / B : 10 / 10 secondes ;
+- dégagement : 6 secondes à chaque transition ;
+- espacement entre entrées : 5 secondes ;
+- longueur : 10 mètres ; vitesse : 36 km/h ;
+- files initiales A / B : 0 / 0 ; mode : Comptage fourni.
+
+Le débit et la graine ne jouent aucun rôle avec ce comptage fictif :
+
+    arrivee_s,sens
+    0,A
+    0,A
+    0,A
+    0,B
+    0,B
+
+Cliquer « Utiliser ce comptage », puis au poste « Lancer la simulation ».
+
+Résultats attendus :
+- cycle : 32 s ; traversée : 1 s ; capacités : 225 véh/h par sens ;
+- entrées des trois A : 5, 10, 37 s ; sorties : 6, 11, 38 s ;
+- entrées des deux B : 21, 26 s ; sorties : 22, 27 s ;
+- 5 véhicules sortis, 0 encore en traversée, 0 encore en attente ;
+- file maximale : 5 véhicules ;
+- attente moyenne : (5 + 10 + 37 + 21 + 26) / 5 = 19,8 s ;
+- file moyenne : 99 / 60 = 1,65 véhicule.
+
+Dans Comparer, reprendre les mêmes réglages : résultats identiques.
+Dans Rapports, les cinq véhicules doivent apparaître avec ces valeurs.
+Le PDF et le classeur doivent reproduire le même bilan.
+
+Autres tests :
+- Poisson, débits 0 / 0, files initiales 0 / 0 : aucun véhicule.
+- 120 m à 30 km/h : 14,4 s de traversée ; dégagement 10 s refusé.
+- arrivée à la seconde 60 avec un horizon de 1 min : refusée.
+- un A arrivant à 59 s dans le test ci-dessus reste en file : attente
+  observée 1 s à la fin, attente finale inconnue.
+
+## 9. Rapports et données
+
+Rapports disponibles après une simulation : véhicules CSV, files CSV,
+rapport PDF et classeur Excel à cinq feuilles : Parametres, Indicateurs,
+Arrivees, Vehicules et Files. Le PDF distingue attente observée et attente
+des admis, et rappelle les hypothèses et limites.
+
+La sauvegarde JSON conserve les paramètres et les arrivées manuelles/importées,
+sans résultat préfabriqué. Après restauration explicite, relancer la simulation.
+En mode Poisson, le résultat est reproduit par la graine et les versions des
+bibliothèques. Les exports statistiques CSV ne sont pas des sauvegardes complètes.
+
+Pas de base de données : tout reste dans la session Streamlit du navigateur.
+Une déconnexion, un redémarrage ou la fin de la session peut perdre le travail.
+Télécharger la sauvegarde JSON avant de quitter. Les deux espaces ne sont
+pas fusionnés. « Charger l'exemple » réinitialise seulement la démonstration.
+
+## 10. Publication GitHub et déploiement Streamlit Community Cloud
+
+IMPORTANT : Community Cloud attend requirements.txt, pas requirement.text.
+Le dossier livré garde volontairement le nom requirement.text demandé.
+Préparer une COPIE distincte pour le déploiement, depuis le dossier traficlab :
+
+    New-Item -ItemType Directory -Path ..\traficlab-deploiement
+    Copy-Item app.py ..\traficlab-deploiement\app.py
+    Copy-Item requirement.text ..\traficlab-deploiement\requirements.txt
+    Copy-Item README ..\traficlab-deploiement\README
+
+Si le dossier de copie existe déjà, examiner son contenu avant de le réutiliser.
+Ne pas supprimer de dépôt ni remplacer une autre application.
+
+Méthode GitHub sans terminal :
+1. Créer sur GitHub un NOUVEAU dépôt, par exemple traficlab.
+2. Add file > Upload files : sélectionner les trois fichiers de la COPIE.
+3. Vérifier que app.py et requirements.txt sont à la racine de la même branche.
+4. Valider le commit sur main. Ne pas créer de branche supplémentaire inutile.
+5. Sur Streamlit Community Cloud, Create app : sélectionner le dépôt,
+   la branche main et le fichier principal app.py.
+6. Si « Paste URL » est utilisé, fournir le lien du FICHIER, pas seulement
+   du dépôt. Exemple à adapter après avoir réellement créé ce dépôt :
+   https://github.com/gc7258728-cmyk/traficlab/blob/main/app.py
+7. Choisir Python 3.12 ou une version compatible disponible, puis Deploy.
+8. Vérifier les logs, les imports et le jeu d'exemple après le déploiement.
+
+Méthode VS Code avec Git, depuis la COPIE de déploiement :
+
+    git init
+    git add app.py requirements.txt README
+    git commit -m "Premiere version de TraficLab"
+    git branch -M main
+    git remote add origin https://github.com/gc7258728-cmyk/traficlab.git
+    git remote -v
+    git push -u origin main
+
+L'adresse ci-dessus suppose que vous avez créé ce dépôt sur ce compte.
+Si origin existe déjà, vérifier git remote -v avant tout changement.
+Ne pas envoyer cette application dans un dépôt d'une autre application.
+
+Pour une mise à jour : recopier les fichiers modifiés dans la copie, puis :
+
+    git status
+    git add app.py requirements.txt README
+    git commit -m "Mise a jour TraficLab"
+    git push
+
+Streamlit redéploie les changements de la branche suivie. Vérifier les logs.
+Reboot ne corrige pas un nom de fichier de dépendances incorrect.
+Aucun déploiement public ni création de dépôt n'est réalisé automatiquement
+par cette livraison. Seule l'exécution locale a été mise en place.
+
+## 11. Limites et références
+
+Modèle d'enseignement, pas un outil de conception de signalisation.
+Il ne modélise pas les poids lourds séparément, l'accélération, les piétons,
+les pannes, la géométrie des carrefours voisins, le refoulement en amont,
+les horaires variables ni les instructions d'agents de circulation.
+Il ne prétend pas respecter ou vérifier une norme camerounaise.
+Ne pas appliquer ses réglages sur une route réelle sans étude adaptée.
+
+Sources primaires utilisées pour l'implémentation :
+- SimPy, files FIFO et événements :
+  https://simpy.readthedocs.io/en/stable/api_reference/simpy.resources.html
+- SciPy, loi de Poisson :
+  https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.poisson.html
+- SciPy, intervalle de proportion :
+  https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats._result_classes.BinomTestResult.proportion_ci.html
+- FHWA, principes de feux pour section à sens alterné (référence américaine,
+  PAS une norme locale ni un calcul complet de dégagement) :
+  https://mutcd.fhwa.dot.gov/htm/2009/part4/part4h.htm
+- Streamlit Community Cloud, dépendances :
+  https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/app-dependencies
+
+Les vérifications et captures de cette livraison sont conservées hors de
+ce dossier, dans work/traficlab-qa et work/test_traficlab.py de l'espace local.
+
+## 12. Vérifications réellement effectuées
+
+- Installation avec python -m pip install -r requirement.text vérifiée.
+- 54 tests automatisés réussis : exemple exact, FIFO, arrivées à un créneau,
+  fin d'horizon, véhicules en traversée, bilan et intégrale des files,
+  absence de traversées opposées simultanées, comparaison à arrivées égales,
+  Poisson, Monte-Carlo reproductible, quantiles, Wilson, validations,
+  imports CSV/Excel, sauvegarde JSON, exports et navigation.
+- Commandes natives Animer / Pause / Recommencer testées. La navigation
+  arrête la relecture. Les paramètres modifiés retirent les anciens résultats.
+- Recette dans un navigateur Edge aux largeurs 1440, 768, 390 et 320 pixels :
+  animation en mouvement, formulaires, comparaison, probabilités, tous les
+  téléchargements, import d'un comptage, restauration et séparation des espaces.
+- Contrôles de débordement et de chevauchement des légendes ; captures
+  ordinateur et mobile inspectées. Les grands tableaux défilent à l'intérieur
+  de leur zone, pas sur toute la page.
+- Contenu des CSV/Excel/JSON/PDF téléchargés vérifié sur les quatre largeurs.
+  Un rapport de test et le rapport de démonstration ont été rendus en images
+  puis inspectés. Les exports ne remplacent pas les fichiers source.
+- Dossier livré vérifié : app.py, requirement.text, README uniquement.
+
+Les tests Streamlit terminent avec OK. Windows peut ensuite signaler un
+accès refusé lors du nettoyage d'un dossier temporaire du framework de test,
+sans échec des tests. Une fermeture du navigateur automatisé peut aussi
+laisser un message de connexion réinitialisée dans le journal du serveur.
+
+Restent à effectuer par le propriétaire : création du dépôt GitHub,
+déploiement public, tests avec ses propres comptages et essai sur un téléphone
+physique. Les captures mobiles sont des tests de viewport, pas une certification
+de tous les appareils ni une validation professionnelle du modèle.

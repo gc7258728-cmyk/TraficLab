@@ -1,0 +1,8 @@
+streamlit>=1.65,<2
+numpy>=2.2,<3
+pandas>=2.2,<4
+plotly>=6,<8
+simpy>=4.1.2,<5
+scipy>=1.15,<2
+reportlab>=4.2,<5
+openpyxl>=3.1,<4
